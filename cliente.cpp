@@ -42,7 +42,7 @@ int main(int argc, char* argv[]) {
             std::cout << "C: " << input << "\n";
             input += "\r\n";
             send(sock, input.c_str(), input.length(), 0);
-            if (input == "QUIT\r\n") break;
+            
         }
 
         if (fds[1].revents & POLLIN) {
