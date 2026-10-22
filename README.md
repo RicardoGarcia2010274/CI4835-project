@@ -17,10 +17,10 @@ En esta entrega del proyecto debemos crear un protocolo de capa de aplicacion or
     Este ejecuta el comando principal, para compilar el o los archivos necesarios
 
  *Paso 2:* Ejecutar el comando :
-    run 
+    Para ejecutar el servidor corremos el siguiente comando
+    ./servidor --chat 5000 --http 8080 --buzones buzon
 
-    este sirve para poder correr los ejecutables, de manera que pueda ver el servidor corriendo de manera sencilla sin necesidad de correr uno por uno cada ejecutable 
-
+    Para ejecutar el cliente 
  *Paso 3:* Ejecutar el comando: 
     clean 
 

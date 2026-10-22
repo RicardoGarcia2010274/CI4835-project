@@ -18,6 +18,7 @@
 #include <cerrno>
 const size_t MAX_LINEA = 512; // Límite máximo antes de exigirse CRLF
 
+// Definimos las estructuras usadas 
 struct MensajeBuzon {
     std::string contenido;
     bool borrado;
@@ -154,7 +155,7 @@ void desconectar_cliente(int fd) {
     Cliente c = clientes[fd];
     if (!c.es_http && !c.apodo.empty()) {
         guardar_buzon(c);
-        std::string aviso = "302 " + c.apodo + " desconecta\r\n";
+        std::string aviso = "302 " + c.apodo + " se ha desconectado\r\n";
         
         // Notificar y remover del mapa de canales
         for (auto it_canal = canales.begin(); it_canal != canales.end(); ) {
@@ -185,6 +186,8 @@ void desconectar_cliente(int fd) {
     }
 }
 
+//AQUI van todos los comandos que es capaz de ejecutar el servidor, con sus respectivos codigos de respuesta y manejo
+//de errores 
 void procesar_comando_chat(int fd, const std::string& comando) {
     std::string resp;
     Cliente& c = clientes[fd];
@@ -233,7 +236,7 @@ void procesar_comando_chat(int fd, const std::string& comando) {
             if (std::find(canales[canal].begin(), canales[canal].end(), fd) == canales[canal].end()) {
                 canales[canal].push_back(fd);
             }
-            resp = "210 Unida a " + canal + "\r\n";
+            resp = "210 Te uniste al canal " + canal + "\r\n";
         }
     }
     else if (comando.find("MSG ") == 0) {
@@ -429,6 +432,8 @@ void procesar_comando_chat(int fd, const std::string& comando) {
     send(fd, resp.c_str(), resp.length(), 0);
 }
 
+
+//IMPORTANTEl: esta es la funcion que maneja las peticiones HTTP hechas con curl -v 
 void procesar_http(int fd, const std::string& peticion) {
     std::string cuerpo;
     std::string codigo_estado = "200 OK";
@@ -517,7 +522,8 @@ int main(int argc, char* argv[]) {
     
     //esta funcion crea la carpeta de buzon si es que no existe en la raiz del proyecto
 
-    //NOTE: 0755 es para asignar permisos r, w, x 
+    //NOTE: 0755 es para asignar permisos r, w, x y este comando crea la carpeta buzon en la raiz del proyecto
+    //si la carpeta existe, pues continua como si nada 
     if (mkdir(dir_buzones.c_str(), 0755) == 0){
         std:: cout << "Se creo la carpeta '" +dir_buzones+ "' exitosamente >:) \r\n" ;
     } else if (errno != EEXIST){
@@ -525,6 +531,7 @@ int main(int argc, char* argv[]) {
         return 1;
     }
 
+    //Creamos los sockets para el chat y el puerto http, que se crean y empiezan a escuchar 
     int chat_fd = crear_socket(puerto_chat);
     int http_fd = crear_socket(puerto_http);
     fds.push_back({chat_fd, POLLIN, 0});
@@ -534,12 +541,16 @@ int main(int argc, char* argv[]) {
 
     //nombre del servidor
     std::string nombre = "Servidor de CI4835";
+
+    //bucle principal de eventos
     while (true) {
         poll(fds.data(), fds.size(), -1);
         for (size_t i = 0; i < fds.size(); ++i) {
             if (fds[i].revents & POLLIN) {
+                //este es el file descriptor del cliente actual 
                 int fd_actual = fds[i].fd;
                 
+                //este IF acepta los clientes que no han sido creados
                 if (fd_actual == chat_fd || fd_actual == http_fd) {
                     int nuevo_fd = accept(fd_actual, nullptr, nullptr);
                     if (nuevo_fd >= 0) {
@@ -555,6 +566,7 @@ int main(int argc, char* argv[]) {
                     char buf[512];
                     int bytes = recv(fd_actual, buf, sizeof(buf), 0);
                     
+                    //si bytes <= 0 el servidor llama a desconectar cliente, que se encarga de limpiar los recursos 
                     if (bytes <= 0) {
                         desconectar_cliente(fd_actual);
                         i--; 
@@ -586,12 +598,14 @@ int main(int argc, char* argv[]) {
                         cliente_ref.descartando = true;
                         continue;
                     }
-
+                    //aqui espera a que la cabecera http este completa para poder invocar a la funcion procesar_http()
                     if (cliente_ref.es_http) {
                         if (cliente_ref.buffer.find("\r\n\r\n") != std::string::npos) {
                             procesar_http(fd_actual, cliente_ref.buffer);
                             i--;
                         }
+
+                        //aqui procesamos los comandos linea por linea, llamando a la funcion procesar comando :)
                     } else {
                         size_t pos;
                         while ((pos = clientes[fd_actual].buffer.find("\r\n")) != std::string::npos) {
