@@ -24,7 +24,7 @@ struct Cliente {
     std::string apodo;
     bool es_http;
     std::vector<MensajeBuzon> buzon_cargado;
-    bool descartando = false; // Estado para descartar bytes de líneas sobredimensionadas
+    bool descartando; // Estado para descartar bytes de líneas sobredimensionadas
 };
 
 std::map<int, Cliente> clientes;
