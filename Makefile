@@ -1,5 +1,6 @@
 CXX = g++
 CXXFLAGS = -Wall -Wextra -std=c++11
+BUZON = buzon
 
 all: servidor cliente
 
@@ -17,3 +18,6 @@ runservidor:
 
 runcliente: 
 	./cliente
+
+limpiar_buzon: 
+	rm -f $(BUZON)/*.txt

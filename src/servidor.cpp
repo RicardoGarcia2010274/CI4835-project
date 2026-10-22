@@ -7,11 +7,12 @@
 #include <unistd.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
+#include <cctype>
 #include <poll.h>
 #include <ctime>
 #include <algorithm>
 
-const size_t MAX_LINEA = 8192; // Límite máximo antes de exigirse CRLF
+const size_t MAX_LINEA = 512; // Límite máximo antes de exigirse CRLF
 
 struct MensajeBuzon {
     std::string contenido;
@@ -33,6 +34,7 @@ std::map<std::string, std::vector<std::string>> historial_canales;
 std::vector<struct pollfd> fds;
 std::string dir_buzones;
 
+//aqui creamos el socket 
 int crear_socket(int puerto) {
     int fd = socket(AF_INET, SOCK_STREAM, 0);
     int opt = 1;
@@ -46,6 +48,7 @@ int crear_socket(int puerto) {
     return fd;
 }
 
+//cargamos el buzon de los usuarios conectados al servidor 
 void cargar_buzon(Cliente& c) {
     c.buzon_cargado.clear();
     std::ifstream archivo(dir_buzones + "/buzon_" + c.apodo + ".txt");
@@ -62,6 +65,17 @@ void cargar_buzon(Cliente& c) {
     if (!msg_actual.empty()) c.buzon_cargado.push_back({msg_actual, false});
 }
 
+//valida que ningun canal tenga letras mayusculas :)
+bool tiene_mayusculas(const std::string& str) {
+    for (char c : str) {
+        if (std::isupper(static_cast<unsigned char>(c))) {
+            return true;
+        }
+    }
+    return false;
+}
+
+//guarda en el buzon los mensajes privados que le lleguen a un cliente 
 void guardar_buzon(const Cliente& c) {
     if (c.apodo.empty()) return;
     std::ofstream archivo(dir_buzones + "/buzon_" + c.apodo + ".txt", std::ios::trunc);
@@ -70,7 +84,8 @@ void guardar_buzon(const Cliente& c) {
     }
 }
 
-// Cierre limpio de clientes (Manejo de desconexiones repentinas)
+// Cierre limpio de clientes, de manera que el servidor no estalle si alguien se 
+// desconecta sin usar QUIT
 void desconectar_cliente(int fd) {
     if (clientes.count(fd) == 0) return;
 
@@ -138,7 +153,7 @@ void procesar_comando_chat(int fd, const std::string& comando) {
 
         if (c.apodo.empty()) {
             resp = "530 No registrado\r\n";
-        } else if (canal.empty() || canal[0] != '#') {
+        } else if (canal.empty() || canal[0] != '#' || tiene_mayusculas(canal)) {
             resp = "501 Sintaxis invalida\r\n";
         } else {
             if (std::find(canales[canal].begin(), canales[canal].end(), fd) == canales[canal].end()) {
@@ -154,6 +169,10 @@ void procesar_comando_chat(int fd, const std::string& comando) {
             std::string texto = comando.substr(espacio + 1);
             
             bool es_miembro = false;
+            if (canal.empty() || canal[0] != '#' || tiene_mayusculas(canal)){
+                resp = "501 Sintaxis Invalida";
+            }
+
             if (canales.count(canal) > 0) {
                 auto it = std::find(canales[canal].begin(), canales[canal].end(), fd);
                 if (it != canales[canal].end()) es_miembro = true;
