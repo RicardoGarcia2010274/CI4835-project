@@ -1,3 +1,5 @@
+//Bibliotecas usadas a lo largo del servidor :(
+
 #include <iostream>
 #include <string>
 #include <vector>
@@ -11,7 +13,9 @@
 #include <poll.h>
 #include <ctime>
 #include <algorithm>
-
+#include <sys/stat.h>
+#include <sys/types.h>
+#include <cerrno>
 const size_t MAX_LINEA = 512; // Límite máximo antes de exigirse CRLF
 
 struct MensajeBuzon {
@@ -33,6 +37,53 @@ std::map<std::string, std::vector<int>> canales;
 std::map<std::string, std::vector<std::string>> historial_canales;
 std::vector<struct pollfd> fds;
 std::string dir_buzones;
+
+//aqui validaremos las longitudes de los apodos: de 1 a 16 caracteres
+
+bool es_apodo_valido(const std::string& apodo){
+    if (apodo.empty() || apodo.length() > 16) {
+        return false;
+    }; 
+
+    for (char c:apodo) {
+        
+        bool es_mayuscula = (c >= 'A' && c <= 'Z');
+        bool es_minuscula = (c >= 'a' && c <= 'z');
+        bool es_digito    = (c >= '0' && c <= '9');
+        bool es_permitido = (c == ' ' || c == '-');
+            
+        if (!es_mayuscula && !es_minuscula && !es_digito && !es_permitido){
+            return false;
+
+        }
+        
+    }; 
+
+    return true;
+}
+
+
+//valida que el nombre de los canales no sea mayor a 32
+bool es_canal_valido(const std::string& canal){
+
+    //validacion
+    if(canal.empty() || canal[0] != '#' || canal.length() > 32){
+        return false; 
+    };
+
+    for (char c: canal){
+        bool es_minuscula = (c >= 'a' && c <= 'z');
+        bool es_digito = (c >= '0' && c <= '9');
+        bool es_permit = (c == ' ' && c == '-');
+
+        if (!es_minuscula && !es_digito && !es_permit){
+            return false; 
+        }
+    }
+
+    return true; 
+}
+
 
 //aqui creamos el socket 
 int crear_socket(int puerto) {
@@ -131,7 +182,7 @@ void procesar_comando_chat(int fd, const std::string& comando) {
         std::string nuevo_apodo = comando.substr(5);
         nuevo_apodo.erase(nuevo_apodo.find_last_not_of(" \n\r\t") + 1);
 
-        if (nuevo_apodo.empty()) {
+        if (nuevo_apodo.empty() || !es_apodo_valido(nuevo_apodo)) {
             resp = "501 Sintaxis invalida\r\n";
         } else {
             c.apodo = nuevo_apodo;
@@ -399,19 +450,30 @@ void procesar_http(int fd, const std::string& peticion) {
 }
 
 int main(int argc, char* argv[]) {
+
     int puerto_chat = 0;
     int puerto_http = 0;
     dir_buzones = "";
-
+    
     for (int i = 1; i < argc; i++) {
         std::string arg = argv[i];
         if (arg == "--chat" && i + 1 < argc) puerto_chat = std::stoi(argv[++i]);
         else if (arg == "--http" && i + 1 < argc) puerto_http = std::stoi(argv[++i]);
         else if (arg == "--buzones" && i + 1 < argc) dir_buzones = argv[++i];
     }
-
+    
     if (puerto_chat == 0 || puerto_http == 0 || dir_buzones.empty()) {
         std::cerr << "Uso: ./servidor --chat <puerto> --http <puerto> --buzones <carpeta>\n";
+        return 1;
+    }
+    
+    //esta funcion crea la carpeta de buzon si es que no existe en la raiz del proyecto
+
+    //NOTE: 0755 es para asignar permisos r, w, x 
+    if (mkdir(dir_buzones.c_str(), 0755) == 0){
+        std:: cout << "Se creo la carpeta '" +dir_buzones+ "' exitosamente >:) \r\n" ;
+    } else if (errno != EEXIST){
+        std::cout << "No se pudo crear la carpeta 'buzones'";
         return 1;
     }
 
