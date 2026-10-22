@@ -73,7 +73,7 @@ void procesar_comando_chat(int fd, const std::string& comando) {
     if (comando.find("NICK ") == 0) {
         c.apodo = comando.substr(5);
         cargar_buzon(c);
-        resp = "201 Bienvenida, " + c.apodo + "\r\n";
+        resp = "201 Bienvenido, " + c.apodo + "!" +"\r\n";
         if (!c.buzon_cargado.empty()) {
             resp += "303 " + std::to_string(c.buzon_cargado.size()) + "\r\n";
         }
