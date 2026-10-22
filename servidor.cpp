@@ -11,6 +11,8 @@
 #include <ctime>
 #include <algorithm>
 
+const size_t MAX_LINEA = 8192; // Límite máximo antes de exigirse CRLF
+
 struct MensajeBuzon {
     std::string contenido;
     bool borrado;
@@ -22,12 +24,14 @@ struct Cliente {
     std::string apodo;
     bool es_http;
     std::vector<MensajeBuzon> buzon_cargado;
+    bool descartando = false; // Estado para descartar bytes de líneas sobredimensionadas
 };
 
 std::map<int, Cliente> clientes;
 std::map<std::string, std::vector<int>> canales;
 std::map<std::string, std::vector<std::string>> historial_canales;
 std::vector<struct pollfd> fds;
+std::string dir_buzones;
 
 int crear_socket(int puerto) {
     int fd = socket(AF_INET, SOCK_STREAM, 0);
@@ -44,7 +48,7 @@ int crear_socket(int puerto) {
 
 void cargar_buzon(Cliente& c) {
     c.buzon_cargado.clear();
-    std::ifstream archivo("buzon_" + c.apodo + ".txt");
+    std::ifstream archivo(dir_buzones + "/buzon_" + c.apodo + ".txt");
     if (!archivo.is_open()) return;
     
     std::string linea, msg_actual;
@@ -59,9 +63,48 @@ void cargar_buzon(Cliente& c) {
 }
 
 void guardar_buzon(const Cliente& c) {
-    std::ofstream archivo("buzon_" + c.apodo + ".txt", std::ios::trunc);
+    if (c.apodo.empty()) return;
+    std::ofstream archivo(dir_buzones + "/buzon_" + c.apodo + ".txt", std::ios::trunc);
     for (const auto& msg : c.buzon_cargado) {
         if (!msg.borrado) archivo << msg.contenido;
+    }
+}
+
+// Cierre limpio de clientes (Manejo de desconexiones repentinas)
+void desconectar_cliente(int fd) {
+    if (clientes.count(fd) == 0) return;
+
+    Cliente c = clientes[fd];
+    if (!c.es_http && !c.apodo.empty()) {
+        guardar_buzon(c);
+        std::string aviso = "302 " + c.apodo + " desconecta\r\n";
+        
+        // Notificar y remover del mapa de canales
+        for (auto it_canal = canales.begin(); it_canal != canales.end(); ) {
+            auto& miembros = it_canal->second;
+            auto it_m = std::find(miembros.begin(), miembros.end(), fd);
+            if (it_m != miembros.end()) {
+                miembros.erase(it_m);
+                for (int m_fd : miembros) {
+                    send(m_fd, aviso.c_str(), aviso.length(), 0);
+                }
+            }
+            if (miembros.empty()) {
+                it_canal = canales.erase(it_canal);
+            } else {
+                ++it_canal;
+            }
+        }
+    }
+
+    close(fd);
+    clientes.erase(fd);
+
+    for (auto it = fds.begin(); it != fds.end(); ++it) {
+        if (it->fd == fd) {
+            fds.erase(it);
+            break;
+        }
     }
 }
 
@@ -73,18 +116,20 @@ void procesar_comando_chat(int fd, const std::string& comando) {
         std::string nuevo_apodo = comando.substr(5);
         nuevo_apodo.erase(nuevo_apodo.find_last_not_of(" \n\r\t") + 1);
 
-        c.apodo = nuevo_apodo;
-        cargar_buzon(c);
-        resp = "201 Bienvenido, " + c.apodo + " !" +"\r\n";
+        if (nuevo_apodo.empty()) {
+            resp = "501 Sintaxis invalida\r\n";
+        } else {
+            c.apodo = nuevo_apodo;
+            cargar_buzon(c);
+            resp = "201 Bienvenido, " + c.apodo + " !\r\n";
 
-        //Esto le indica al cliente los mensajes que tiene en el buzon que no estan 
-        //leidos 
-        int no_leidos = 0;
-        for (const auto& msg : c.buzon_cargado) {
-            if (!msg.borrado) no_leidos++;
-        }
-        if (no_leidos > 0) {
-            resp += "303 " + std::to_string(no_leidos) + "\r\n";
+            int no_leidos = 0;
+            for (const auto& msg : c.buzon_cargado) {
+                if (!msg.borrado) no_leidos++;
+            }
+            if (no_leidos > 0) {
+                resp += "303 " + std::to_string(no_leidos) + "\r\n";
+            }
         }
     } 
     else if (comando.find("JOIN ") == 0) {
@@ -111,16 +156,20 @@ void procesar_comando_chat(int fd, const std::string& comando) {
             bool es_miembro = false;
             if (canales.count(canal) > 0) {
                 auto it = std::find(canales[canal].begin(), canales[canal].end(), fd);
-                if (it != canales[canal].end()) {
-                    es_miembro = true;
-                }
+                if (it != canales[canal].end()) es_miembro = true;
             }
 
             if (!es_miembro) {
                 resp = "442 No eres miembro del canal\r\n";
             } else {
                 std::string evento = "300 " + canal + " " + c.apodo + ": " + texto + "\r\n";
-                historial_canales[canal].push_back(c.apodo + ": " + texto);
+                
+                time_t ahora = time(nullptr);
+                char buffer_hora[10];
+                strftime(buffer_hora, sizeof(buffer_hora), "%H:%M:%S", localtime(&ahora));
+                std::string registro_historial = std::string(buffer_hora) + " " + c.apodo + ": " + texto;
+                
+                historial_canales[canal].push_back(registro_historial);
                 if (historial_canales[canal].size() > 50) historial_canales[canal].erase(historial_canales[canal].begin());
 
                 for (int miembro_fd : canales[canal]) {
@@ -147,7 +196,6 @@ void procesar_comando_chat(int fd, const std::string& comando) {
             resp = "551 Canal inexistente\r\n";
         }
     }
-
     else if (comando == "LIST") {
         int count = 0;
         for (size_t i = 0; i < c.buzon_cargado.size(); ++i) {
@@ -174,7 +222,7 @@ void procesar_comando_chat(int fd, const std::string& comando) {
                 send(dest_fd, msg.c_str(), msg.length(), 0);
                 resp = "250 OK\r\n";
             } else {
-                std::ofstream archivo("buzon_" + dest + ".txt", std::ios::app);
+                std::ofstream archivo(dir_buzones + "/buzon_" + dest + ".txt", std::ios::app);
                 archivo << "From: " << c.apodo << "@chat.ci4835\r\n"
                         << "To: " << dest << "@chat.ci4835\r\n"
                         << "Date: Thu, 15 Oct 2026 10:00:00 -0400\r\n"
@@ -212,41 +260,45 @@ void procesar_comando_chat(int fd, const std::string& comando) {
         resp = "220 " + std::to_string(count) + " " + std::to_string(bytes) + "\r\n";
     }
     else if (comando.find("RETR ") == 0) {
-        int n = std::stoi(comando.substr(5)) - 1;
-        if (n >= 0 && n < (int)c.buzon_cargado.size() && !c.buzon_cargado[n].borrado) {
-            std::stringstream ss(c.buzon_cargado[n].contenido);
-            std::string linea;
-            while (std::getline(ss, linea)) {
-                if (!linea.empty() && linea.back() == '\r') linea.pop_back();
-                resp += "222-" + linea + "\r\n";
+        try {
+            int n = std::stoi(comando.substr(5)) - 1;
+            if (n >= 0 && n < (int)c.buzon_cargado.size() && !c.buzon_cargado[n].borrado) {
+                std::stringstream ss(c.buzon_cargado[n].contenido);
+                std::string linea;
+                while (std::getline(ss, linea)) {
+                    if (!linea.empty() && linea.back() == '\r') linea.pop_back();
+                    resp += "222-" + linea + "\r\n";
+                }
+                resp += "222 fin del mensaje\r\n";
+            } else {
+                resp = "552 Mensaje no existe\r\n";
             }
-            resp += "222 fin del mensaje\r\n";
-        } else {
-            resp = "552 Mensaje no existe\r\n";
+        } catch (...) {
+            resp = "501 Sintaxis invalida\r\n";
         }
     }
     else if (comando.find("DELE ") == 0) {
-        int n = std::stoi(comando.substr(5)) - 1;
-        if (n >= 0 && n < (int)c.buzon_cargado.size()) {
-            c.buzon_cargado[n].borrado = true;
-            resp = "223 Mensaje " + std::to_string(n+1) + " marcado para borrar\r\n";
-        } else {
-            resp = "552 Mensaje no existe\r\n";
+        try {
+            int n = std::stoi(comando.substr(5)) - 1;
+            if (n >= 0 && n < (int)c.buzon_cargado.size()) {
+                c.buzon_cargado[n].borrado = true;
+                resp = "223 Mensaje " + std::to_string(n+1) + " marcado para borrar\r\n";
+            } else {
+                resp = "552 Mensaje no existe\r\n";
+            }
+        } catch (...) {
+            resp = "501 Sintaxis invalida\r\n";
         }
     }
     else if (comando.find("QUIT") == 0) {
-        guardar_buzon(c);
         resp = "299 Adiós\r\n";
         send(fd, resp.c_str(), resp.length(), 0);
-        close(fd);
-        clientes.erase(fd);
+        desconectar_cliente(fd);
         return;
     }
-
     else if (comando == "CHANS") {
         int total_canales = 0;
         for (const auto& par : canales) {
-            // par.first es el nombre del canal, par.second es el vector de miembros
             resp += "212-" + par.first + " " + std::to_string(par.second.size()) + "\r\n";
             total_canales++;
         }
@@ -264,7 +316,6 @@ void procesar_http(int fd, const std::string& peticion) {
     std::string codigo_estado = "200 OK";
     std::string cabeceras_extra = "";
 
-    // 1. Extraer la primera línea de la petición (Request Line)
     size_t fin_linea = peticion.find("\r\n");
     if (fin_linea == std::string::npos) {
         codigo_estado = "400 Bad Request";
@@ -272,23 +323,20 @@ void procesar_http(int fd, const std::string& peticion) {
     } else {
         std::string request_line = peticion.substr(0, fin_linea);
         
-        // 2. Extraer las tres partes: Método, Ruta y Versión
         std::istringstream iss(request_line);
         std::string metodo, ruta, version;
         iss >> metodo >> ruta >> version;
 
-        // Validaciones estrictas según los requerimientos
         if (metodo.empty() || ruta.empty() || version.empty()) {
             codigo_estado = "400 Bad Request";
             cuerpo = "400 Petición mal formada\n";
         } 
         else if (metodo != "GET") {
             codigo_estado = "405 Method Not Allowed";
-            cabeceras_extra = "Allow: GET\r\n"; // Cabecera obligatoria para 405
+            cabeceras_extra = "Allow: GET\r\n"; 
             cuerpo = "405 Método no permitido\n";
         } 
         else {
-            // Es un GET válido, procesamos las rutas exactas
             if (ruta == "/usuarios") {
                 for (const auto& par : clientes) {
                     if (!par.second.es_http && !par.second.apodo.empty()) {
@@ -302,7 +350,6 @@ void procesar_http(int fd, const std::string& peticion) {
                 }
             } 
             else if (ruta.find("/historial/") == 0) {
-                // Extraemos el nombre del canal de la ruta y le agregamos '#'
                 std::string canal_buscado = "#" + ruta.substr(11);
                 
                 if (historial_canales.count(canal_buscado)) {
@@ -321,7 +368,6 @@ void procesar_http(int fd, const std::string& peticion) {
         }
     }
 
-    // 3. Construir la respuesta garantizando las cabeceras obligatorias
     std::string respuesta = "HTTP/1.1 " + codigo_estado + "\r\n"
                             "Content-Type: text/plain; charset=utf-8\r\n"
                             "Content-Length: " + std::to_string(cuerpo.length()) + "\r\n"
@@ -330,12 +376,28 @@ void procesar_http(int fd, const std::string& peticion) {
                             "\r\n" + cuerpo;
                             
     send(fd, respuesta.c_str(), respuesta.length(), 0);
-    close(fd);
-    clientes.erase(fd);
+    desconectar_cliente(fd);
 }
-int main() {
-    int chat_fd = crear_socket(5000);
-    int http_fd = crear_socket(8080);
+
+int main(int argc, char* argv[]) {
+    int puerto_chat = 0;
+    int puerto_http = 0;
+    dir_buzones = "";
+
+    for (int i = 1; i < argc; i++) {
+        std::string arg = argv[i];
+        if (arg == "--chat" && i + 1 < argc) puerto_chat = std::stoi(argv[++i]);
+        else if (arg == "--http" && i + 1 < argc) puerto_http = std::stoi(argv[++i]);
+        else if (arg == "--buzones" && i + 1 < argc) dir_buzones = argv[++i];
+    }
+
+    if (puerto_chat == 0 || puerto_http == 0 || dir_buzones.empty()) {
+        std::cerr << "Uso: ./servidor --chat <puerto> --http <puerto> --buzones <carpeta>\n";
+        return 1;
+    }
+
+    int chat_fd = crear_socket(puerto_chat);
+    int http_fd = crear_socket(puerto_http);
     fds.push_back({chat_fd, POLLIN, 0});
     fds.push_back({http_fd, POLLIN, 0});
 
@@ -346,31 +408,57 @@ int main() {
         for (size_t i = 0; i < fds.size(); ++i) {
             if (fds[i].revents & POLLIN) {
                 int fd_actual = fds[i].fd;
+                
                 if (fd_actual == chat_fd || fd_actual == http_fd) {
                     int nuevo_fd = accept(fd_actual, nullptr, nullptr);
-                    fds.push_back({nuevo_fd, POLLIN, 0});
-                    clientes[nuevo_fd] = {nuevo_fd, "", "", (fd_actual == http_fd), {}};
-                    if (fd_actual == chat_fd) {
-                        std::string bienv = "200 server listo\r\n";
-                        send(nuevo_fd, bienv.c_str(), bienv.length(), 0);
+                    if (nuevo_fd >= 0) {
+                        fds.push_back({nuevo_fd, POLLIN, 0});
+                        clientes[nuevo_fd] = {nuevo_fd, "", "", (fd_actual == http_fd), {}, false};
+                        
+                        if (fd_actual == chat_fd) {
+                            std::string bienv = "200 chat - ci4835 listo\r\n";
+                            send(nuevo_fd, bienv.c_str(), bienv.length(), 0);
+                        }
                     }
                 } else {
                     char buf[512];
                     int bytes = recv(fd_actual, buf, sizeof(buf), 0);
+                    
                     if (bytes <= 0) {
-                        close(fd_actual);
-                        clientes.erase(fd_actual);
-                        fds.erase(fds.begin() + i);
+                        desconectar_cliente(fd_actual);
                         i--; 
                         continue;
                     }
 
-                    clientes[fd_actual].buffer.append(buf, bytes);
+                    Cliente& cliente_ref = clientes[fd_actual];
 
-                    if (clientes[fd_actual].es_http) {
-                        if (clientes[fd_actual].buffer.find("\r\n\r\n") != std::string::npos) {
-                            procesar_http(fd_actual, clientes[fd_actual].buffer);
-                            fds.erase(fds.begin() + i);
+                    // Manejo del estado de descarte para líneas demasiado largas
+                    if (cliente_ref.descartando) {
+                        cliente_ref.buffer.append(buf, bytes);
+                        size_t pos = cliente_ref.buffer.find("\r\n");
+                        if (pos != std::string::npos) {
+                            cliente_ref.buffer.erase(0, pos + 2);
+                            cliente_ref.descartando = false;
+                        } else {
+                            cliente_ref.buffer.clear();
+                        }
+                        continue;
+                    }
+
+                    cliente_ref.buffer.append(buf, bytes);
+
+                    // Verificación preventiva de tamaño de línea antes de CRLF
+                    if (cliente_ref.buffer.length() > MAX_LINEA && cliente_ref.buffer.find("\r\n") == std::string::npos) {
+                        std::string err = "502 Linea demasiado larga\r\n";
+                        send(fd_actual, err.c_str(), err.length(), 0);
+                        cliente_ref.buffer.clear();
+                        cliente_ref.descartando = true;
+                        continue;
+                    }
+
+                    if (cliente_ref.es_http) {
+                        if (cliente_ref.buffer.find("\r\n\r\n") != std::string::npos) {
+                            procesar_http(fd_actual, cliente_ref.buffer);
                             i--;
                         }
                     } else {
@@ -379,6 +467,11 @@ int main() {
                             std::string comando = clientes[fd_actual].buffer.substr(0, pos);
                             clientes[fd_actual].buffer.erase(0, pos + 2);
                             procesar_comando_chat(fd_actual, comando);
+                            
+                            if (clientes.count(fd_actual) == 0) {
+                                i--;
+                                break;
+                            }
                         }
                     }
                 }
