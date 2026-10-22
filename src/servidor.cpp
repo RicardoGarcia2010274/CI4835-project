@@ -483,7 +483,7 @@ int main(int argc, char* argv[]) {
     fds.push_back({http_fd, POLLIN, 0});
 
     std::cout << "Servidor iniciado...\n";
-
+    std::string nombre = "Servidor de CI4835";
     while (true) {
         poll(fds.data(), fds.size(), -1);
         for (size_t i = 0; i < fds.size(); ++i) {
@@ -497,7 +497,7 @@ int main(int argc, char* argv[]) {
                         clientes[nuevo_fd] = {nuevo_fd, "", "", (fd_actual == http_fd), {}, false};
                         
                         if (fd_actual == chat_fd) {
-                            std::string bienv = "200 chat - ci4835 listo\r\n";
+                            std::string bienv = "200 "+ nombre +" listo\r\n";
                             send(nuevo_fd, bienv.c_str(), bienv.length(), 0);
                         }
                     }
