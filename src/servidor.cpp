@@ -29,6 +29,7 @@ struct Cliente {
     std::string apodo;
     bool es_http;
     std::vector<MensajeBuzon> buzon_cargado;
+    //bool desconectar = false;
     bool descartando; // Estado para descartar bytes de líneas sobredimensionadas
 };
 
@@ -61,7 +62,6 @@ bool es_apodo_valido(const std::string& apodo){
     return true;
 }
 
-
 //valida que el nombre de los canales no sea mayor a 32
 bool es_canal_valido(const std::string& canal){
 
@@ -86,10 +86,10 @@ bool es_canal_valido(const std::string& canal){
 
 //aqui validamos que el nombre de la persona no este en uso ya, cuando crea su nickname 
 
-bool nombre_en_uso(int, fd_actual, const std::string& nombre){
+bool nombre_en_uso(int fd_actual, const std::string& nombre){
 
     for (const auto& par : clientes ){
-        if (par.first != fd_actual && !par.second.es_http && par.second.apodo == apodo){
+        if (par.first != fd_actual && !par.second.es_http && par.second.apodo == nombre){
             return true;
         }
     }
@@ -189,15 +189,24 @@ void procesar_comando_chat(int fd, const std::string& comando) {
     std::string resp;
     Cliente& c = clientes[fd];
 
-    if (comando.find("NICK ") == 0) {
-        std::string nuevo_apodo = comando.substr(5);
-        nuevo_apodo.erase(nuevo_apodo.find_last_not_of(" \n\r\t") + 1);
+    if (comando.find("NICK") == 0) {
+    std::string nuevo_apodo = comando.substr(5);
+        
+        // Eliminar espacios y saltos de línea al inicio y al final
+        size_t inicio = nuevo_apodo.find_first_not_of(" \n\r\t");
+        if (inicio != std::string::npos) {
+            size_t fin = nuevo_apodo.find_last_not_of(" \n\r\t");
+            nuevo_apodo = nuevo_apodo.substr(inicio, fin - inicio + 1);
+        } else {
+            nuevo_apodo = "";
+        }
 
-        if(nombre_en_uso(fd, nuevo_apodo)){
-            resp = "433 Apodo ya en uso mi pana\r\n"
-        };
-        if (nuevo_apodo.empty() || !es_apodo_valido(nuevo_apodo)) {
+        if (!es_apodo_valido(nuevo_apodo)) {
             resp = "501 Sintaxis invalida\r\n";
+        } else if (nombre_en_uso(fd, nuevo_apodo)) {
+            resp = "433 Apodo ya en uso\r\n";
+        } else if (c.apodo == nuevo_apodo) {
+            resp = "201 Ya estas registrado como " + c.apodo + " !\r\n";
         } else {
             c.apodo = nuevo_apodo;
             cargar_buzon(c);
@@ -211,7 +220,7 @@ void procesar_comando_chat(int fd, const std::string& comando) {
                 resp += "303 " + std::to_string(no_leidos) + "\r\n";
             }
         }
-    } 
+    }
     else if (comando.find("JOIN ") == 0) {
         std::string canal = comando.substr(5);
         canal.erase(canal.find_last_not_of(" \n\r\t") + 1);
@@ -362,25 +371,50 @@ void procesar_comando_chat(int fd, const std::string& comando) {
         }
     }
     else if (comando.find("DELE ") == 0) {
-        try {
-            int n = std::stoi(comando.substr(5)) - 1;
-            if (n >= 0 && n < (int)c.buzon_cargado.size()) {
-                c.buzon_cargado[n].borrado = true;
-                resp = "223 Mensaje " + std::to_string(n+1) + " marcado para borrar\r\n";
-            } else {
-                resp = "552 Mensaje no existe\r\n";
+        if (c.apodo.empty()) {
+            resp = "530 No registrado\r\n";
+        } else {
+            try {
+                int id_msg = std::stoi(comando.substr(5));
+                if (id_msg >= 1 && id_msg <= static_cast<int>(c.buzon_cargado.size())) {
+                    if (c.buzon_cargado[id_msg - 1].borrado) {
+                        resp = "501 Mensaje ya marcado para borrar\r\n";
+                    } else {
+                        c.buzon_cargado[id_msg - 1].borrado = true;
+                        resp = "250 Mensaje " + std::to_string(id_msg) + " marcado para borrar\r\n";
+                    }
+                } else {
+                    resp = "501 Mensaje inexistente\r\n";
+                }
+            } catch (...) {
+                resp = "501 Sintaxis invalida\r\n";
             }
-        } catch (...) {
-            resp = "501 Sintaxis invalida\r\n";
         }
     }
-    else if (comando.find("QUIT") == 0) {
-        resp = "299 Adiós\r\n";
-        send(fd, resp.c_str(), resp.length(), 0);
-        desconectar_cliente(fd);
-        return;
+    else if (comando == "QUIT" || comando.find("QUIT ") == 0) {
+       if (c.apodo.empty()) {
+            resp = "530 No registrado\r\n";
+        } else {
+            std::string ruta_buzon = dir_buzones + "/buzon_" + c.apodo + ".txt";
+            
+            // Reescritura atómica/sincronización en disco al salir
+            std::ofstream archivo(ruta_buzon, std::ios::trunc);
+            if (archivo.is_open()) {
+                for (const auto& msg : c.buzon_cargado) {
+                    if (!msg.borrado) {
+                        archivo << msg.contenido;
+                    }
+                }
+                archivo.close();
+            }
+            resp = "299 Adios\r\n"; 
+
+            //envia la respuesta antes de bajar el cliente
+            send(fd, resp.c_str(), resp.length(), 0);
+            desconectar_cliente(fd);
+        }
     }
-    else if (comando == "CHANS") {
+        else if (comando == "CHANS") {
         int total_canales = 0;
         for (const auto& par : canales) {
             resp += "212-" + par.first + " " + std::to_string(par.second.size()) + "\r\n";
