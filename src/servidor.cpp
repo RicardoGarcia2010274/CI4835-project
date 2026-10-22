@@ -39,7 +39,6 @@ std::vector<struct pollfd> fds;
 std::string dir_buzones;
 
 //aqui validaremos las longitudes de los apodos: de 1 a 16 caracteres
-
 bool es_apodo_valido(const std::string& apodo){
     if (apodo.empty() || apodo.length() > 16) {
         return false;
@@ -84,6 +83,18 @@ bool es_canal_valido(const std::string& canal){
     return true; 
 }
 
+
+//aqui validamos que el nombre de la persona no este en uso ya, cuando crea su nickname 
+
+bool nombre_en_uso(int, fd_actual, const std::string& nombre){
+
+    for (const auto& par : clientes ){
+        if (par.first != fd_actual && !par.second.es_http && par.second.apodo == apodo){
+            return true;
+        }
+    }
+    return false;
+}
 
 //aqui creamos el socket 
 int crear_socket(int puerto) {
@@ -182,6 +193,9 @@ void procesar_comando_chat(int fd, const std::string& comando) {
         std::string nuevo_apodo = comando.substr(5);
         nuevo_apodo.erase(nuevo_apodo.find_last_not_of(" \n\r\t") + 1);
 
+        if(nombre_en_uso(fd, nuevo_apodo)){
+            resp = "433 Apodo ya en uso mi pana\r\n"
+        };
         if (nuevo_apodo.empty() || !es_apodo_valido(nuevo_apodo)) {
             resp = "501 Sintaxis invalida\r\n";
         } else {
@@ -483,6 +497,8 @@ int main(int argc, char* argv[]) {
     fds.push_back({http_fd, POLLIN, 0});
 
     std::cout << "Servidor iniciado...\n";
+
+    //nombre del servidor
     std::string nombre = "Servidor de CI4835";
     while (true) {
         poll(fds.data(), fds.size(), -1);
