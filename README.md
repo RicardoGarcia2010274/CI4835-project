@@ -2,7 +2,7 @@
 
 *Integrantes:*
 Ricardo Garcia 20-10274
-Enyerber Silva 18-11100
+Enyerber Silva 18-1110
 
 # Objetivo Principal
 En esta entrega del proyecto debemos crear un protocolo de capa de aplicacion orientado a texto, junto con un servidor de chat concurrente. 
